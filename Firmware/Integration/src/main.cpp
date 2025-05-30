@@ -176,7 +176,7 @@ void setup() {
 
 
 
-  setenv("TZ", preferences.getString("timezone", "UTC").c_str(), 1);
+  setenv("TZ", "EST5EDT", 1);
   tzset();
   ledcSetup(ledChannel, freq, ledPWMResolution);
   ledcAttachPin(ledPin, ledChannel);
