@@ -146,7 +146,7 @@ movingAvg ambientLight(10);
 // Initial Setup Function
 void setup() {
   // Serial for debug. Preferences for UserMem.
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println("Entered setup");
   preferences.begin("usermem");
   Serial.println("Begin EEPROM");
@@ -350,6 +350,11 @@ void setup() {
 }
 
 
+unsigned long lastWiFiReconnectAttempt = 0;
+uint8_t reconnectAttempts = 0;
+unsigned long wifiReconnectInterval = 5000; // Start with 5 seconds
+const unsigned long wifiReconnectIntervalMax = 86400000; // Max 1 day (24 hours) to prevent infinite loop
+
 void loop() {
   // Connection Successful. Teardown and disable AP.
   if(softAPActive && WiFi.isConnected()){
@@ -369,6 +374,28 @@ void loop() {
     softAPActive = true;
   }
 
+  // If the WiFi is disconnected, try to reconnect every 5 seconds.
+  if (!WiFi.isConnected() && (millis() - lastWiFiReconnectAttempt) > wifiReconnectInterval) {
+    Serial.println("Attempting to reconnect to WiFi...");
+    WiFi.disconnect(true);  // Clean disconnect to reset the WiFi state.
+    delay(100); // Give some time for the disconnect to take effect.
+
+    // Attempt to reconnect to WiFi using stored credentials.
+    WiFi.begin(preferences.getString("WiFiSSID", GARBAGE_STRING).c_str(), preferences.getString("WiFiPSK", GARBAGE_STRING).c_str());
+    lastWiFiReconnectAttempt = millis();
+
+    // Exponential backoff
+    wifiReconnectInterval = min(wifiReconnectInterval * 2, wifiReconnectIntervalMax);
+    reconnectAttempts++;
+  }
+
+  // Reset the reconnect attempts counter if WiFi is connected.
+  if (reconnectAttempts > 0 && WiFi.isConnected()) {
+    Serial.println("Reconnected to WiFi after " + String(reconnectAttempts) + " attempts.");
+    reconnectAttempts = 0; // Reset the counter after a successful connection.
+    wifiReconnectInterval = 5000; // Reset the interval to 5 seconds after a successful connection.
+  }
+
   // Reconnect to NTP To update time 4 times a day.
   if((timeClient.getHours() % 6) == 0 && timeClient.getMinutes() == 0 && timeClient.getSeconds() == 0){
     timeClient.update();
@@ -386,7 +413,7 @@ void loop() {
   if ((millis() % 25) == 0) {
     uint8_t ambiReading = ambientLight.reading(readAmbientLightData());
     // Serial.println(ambiReading);
-    ledcWrite(ledChannel, ambiReading);
+    ledcWrite(ledChannel, ambientLight.getAvg());
   }
 
   // Display IP if button flagged
