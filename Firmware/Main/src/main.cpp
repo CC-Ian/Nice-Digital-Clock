@@ -44,18 +44,31 @@ const int decimalPin = 35;  // Decimal point which separates hours and minutes.
 /// @brief Prints the time to 4 segment displays
 /// @param hours integer number 0-99
 /// @param minutes integer number 0-99
-void printTime(int hours, int minutes){
+void printTime(int hours, int minutes, bool showingIP = false){
   bool timeFormat = preferences.getBool("timeFormat", 1);
   // Serial.println(timeFormat);
-  if (!timeFormat) {
+  if (!timeFormat && !showingIP) {
     hours = (hours % 12) ?: 12;
   }
 
   // Break up the two digit integers to single digits.
-  int hoursT = hours / 10;
-  int hoursO = hours % 10;
-  int minutesT = minutes / 10;
-  int minutesO = minutes % 10;
+  byte hoursT = hours / 10;
+  byte hoursO = hours % 10;
+  byte minutesT = minutes / 10;
+  byte minutesO = minutes % 10;
+
+  // If the user has selected to not show leading zeros, then blank them out.
+  if (showingIP) {
+    if (hoursO == 0 && hoursT == 0) {
+      hoursO = 0xFF; // Blank ones place
+    }
+    if (hoursT == 0) {
+      hoursT = 0xFF; // Blank tens place
+    }
+    if (minutesT == 0) {
+      minutesT = 0xFF; // Blank tens place
+    }
+  }
 
   // Write binary coded decimal to each display.
   // Tens Place
@@ -95,18 +108,18 @@ void displayIP(IPAddress localIP) {
   digitalWrite(decimalPin, 1);
   digitalWrite(38, 0);
 
-  int octet0 = localIP[0];
-  int octet1 = localIP[1];
-  int octet2 = localIP[2];
-  int octet3 = localIP[3];
+  byte octet0 = localIP[0];
+  byte octet1 = localIP[1];
+  byte octet2 = localIP[2];
+  byte octet3 = localIP[3];
 
-  printTime(octet0 / 100, octet0 % 100);
+  printTime(int(octet0 / 100), octet0 % 100, true);
   delay(1500);
-  printTime(octet1 / 100, octet1 % 100);
+  printTime(int(octet1 / 100), octet1 % 100, true);
   delay(1500);
-  printTime(octet2 / 100, octet2 % 100);
+  printTime(octet2 / 100, octet2 % 100, true);
   delay(1500);
-  printTime(octet3 / 100, octet3 % 100);
+  printTime(int(octet3 / 100), octet3 % 100, true);
   delay(1500);
 
   digitalWrite(decimalPin, 0);
