@@ -1,14 +1,10 @@
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <Preferences.h>
-#include <AsyncUDP.h>
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
 #include <Wire.h>
 #include <NTPClient.h>
-#include <time.h>
-#include <movingAvg.h>  
 
 // User Memory - WiFi SSID, PSK, Clock Configuration bits.
 Preferences preferences;
@@ -21,6 +17,7 @@ const char* GARBAGE_STRING = "C!pbujKY2#4HXbcm5dY!WJX#ns29ff#vEDWmbZ9^d!QfBW@o%T
 // Global Variables
 bool softAPActive = 0;
 bool showIP = 0;
+String clientID;
 
 // Server Stuff
 WiFiUDP ntpUDP;
@@ -32,9 +29,17 @@ AsyncWebServer server(80);
 #define ledChannel 0
 #define ledPWMResolution 8
 
-// Pins used for segment displays
+// // EEAN Version: 3.0
 const int hours_pin[8] = {10, 8, 3, 9, 14, 11, 12, 13};
 const int minutes_pin[8] = {7, 4, 5, 6, 18, 15, 16, 17};
+#define SDA_PIN 34
+#define SCL_PIN 33
+
+// // Casual Coders Version: 1.0-2.0
+// const int hours_pin[8] = {9, 8, 3, 14, 13, 10, 11, 12};
+// const int minutes_pin[8] = {7, 4, 5, 6, 18, 15, 16, 17};
+// #define SDA_PIN 33
+// #define SCL_PIN 21
 
 // Additional Control Pins
 const int ledPin = 1;       // Power pin for segment displays. Common Anode
@@ -96,11 +101,6 @@ void printTime(int hours, int minutes, bool showingIP = false){
   digitalWrite(minutes_pin[3], (minutesO >> 3) & 1);  // D1
 }
 
-// Flag the main loop to show the IP Address of the clock.
-static void IRAM_ATTR showIPFlag(){
-  showIP = 1;
-}
-
 /// @brief Flashes the IP Address of the device on the main display.
 /// @param localIP IPAddres object. Basically an array of 8 bit integers.
 void displayIP(IPAddress localIP) {
@@ -127,16 +127,19 @@ void displayIP(IPAddress localIP) {
 }
 
 /// @brief Initializes BH1730 Ambient Light Sensor over I2C.
-void initLightSensor() {
-  Wire.beginTransmission(0x29);
-  Wire.write(0x80);
-  Wire.write(0x3);
-  Wire.endTransmission();
+/// @return true if sensor acknowledges, false otherwise
+bool initLightSensor() {
+  Wire.beginTransmission(0x29);    // BH1730 I2C address
+  Wire.write(0x80);                // Command register
+  Wire.write(0x03);                // Power ON + Enable ALS
+  uint8_t err = Wire.endTransmission();
+
+  return (err == 0);  // 0 means ACK received → success
 }
 
 /// @brief Reads the ambient light bits inside the ambient light sensor
 /// @return 8 bit integer mapped between the user setable min and max brightness values.
-uint8_t readAmbientLightData(){
+uint8_t readAmbientLightData() {
   Wire.beginTransmission(0x29);
   Wire.write(0b10010100);
   Wire.endTransmission();
@@ -153,8 +156,78 @@ uint8_t readAmbientLightData(){
   return( map(lightLevel, 0, 65535, preferences.getInt("minBrightness", 10), preferences.getInt("maxBrightness", 255)) );
 }
 
-// Moving average to smooth out changes in the ambient light.
-movingAvg ambientLight(10);
+/// @brief Calculate the mean of an input array.
+/// @param data The array to compute the mean of.
+/// @return The Mean.
+int calculateMean(uint8_t data[]) {
+  uint64_t sum = 0;
+  int size = sizeof(data) / sizeof(data[0]);
+
+  for (int i = 0; i < size; i++) {
+    sum += data[i];
+  }
+
+  return sum / size;
+}
+
+/// @brief Create a Client ID from the ESP's MAC Address.
+/// @return The ClientID in the form `112233`
+String getClientID(){
+  // Get the ESP MAC Address
+  String macAddress = WiFi.macAddress();
+
+  macAddress.replace(":", "");
+
+  macAddress.toUpperCase();
+    
+  // Create clientID with the last 6 characters of the MAC address
+  return macAddress.substring(macAddress.length() - 6);
+}
+
+/// @brief Task to handle automatic brightness adjustment.
+/// @param parameter NULL
+void handleAutoBrightness(void *parameter) {
+  // Initialize PWM for LED brightness control
+  ledcSetup(ledChannel, freq, ledPWMResolution);
+  ledcWrite(ledChannel, preferences.getInt("minBrightness", 10));
+  ledcAttachPin(ledPin, ledChannel);
+
+  // Begin I2C (SDA, SCL)
+  Wire.begin(SDA_PIN, SCL_PIN);
+  if (!initLightSensor()) {
+    Serial.println("Failed to initialize light sensor.");
+    ledcWrite(ledChannel, preferences.getInt("minBrightness", 10)); // User set minimum brightness
+    vTaskDelete(NULL);
+  };
+
+  // Light Sensor Moving Average
+  #define NUM_SAMPLES 20
+  uint8_t ambientLightData[NUM_SAMPLES];
+
+  // Fill moving average with real data.
+  // Prevents the clock from bouncing around in brightness.
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    ambientLightData[i] = readAmbientLightData();
+  }
+
+  uint8_t index = 0;
+  for (;;) {
+  // Adjust light intensity using a moving average
+    ambientLightData[index] = readAmbientLightData();
+    index = (index + 1) % NUM_SAMPLES; // Circular buffer
+
+    // Serial.println(ambiReading);
+    ledcWrite(ledChannel, calculateMean(ambientLightData));
+
+    // Adjust every 5ms
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
+
+// Flag the main loop to show the IP Address of the clock.
+static void IRAM_ATTR showIPFlag() {
+  showIP = 1;
+}
 
 // Initial Setup Function
 void setup() {
@@ -165,22 +238,14 @@ void setup() {
   Serial.println("Begin EEPROM");
   SPIFFS.begin();
 
+  // Start the automatic brightness task.
+  xTaskCreate(handleAutoBrightness, "AutoBrightness", 4096, NULL, 1, NULL);
+
+  // Set ClientID
+  clientID = getClientID();
+
   setenv("TZ", preferences.getString("timezone", "UTC").c_str(), 1);
   tzset();
-  ledcSetup(ledChannel, freq, ledPWMResolution);
-  ledcAttachPin(ledPin, ledChannel);
-  ledcWrite(ledChannel, 50);
-
-  // Begin I2C (SDA, SCL)
-  Wire.begin(34, 33);
-  initLightSensor();
-  ambientLight.begin();
-
-  // Fill moving average with real data.
-  // Prevents the clock from bouncing around in brightness.
-  for (int i = 0; i < 10; i++) {
-    ambientLight.reading(readAmbientLightData());
-  }
 
   // Activate the decimal point as hour indicator.
   pinMode(decimalPin, OUTPUT);
@@ -195,9 +260,9 @@ void setup() {
   // ---------- WiFi Section ----------
   // Access Point init
   Serial.println("Start Access Point");
-  WiFi.softAPsetHostname("niceclock");
+  WiFi.softAPsetHostname(("niceclock" + clientID).c_str());
   WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(APID, APSK);
+  WiFi.softAP(("NiceClock" + clientID).c_str(), APSK);
   softAPActive = true;
 
   // Skip WiFi configuration if no credentials exist.
@@ -210,7 +275,7 @@ void setup() {
     Serial.println("WiFi Configured. Attempting Connection.");
    
     // Begin WiFi with the stored credentials.
-    WiFi.setHostname("niceclock");
+    WiFi.setHostname(("niceclock" + clientID).c_str());
     WiFi.begin(preferences.getString("WiFiSSID", GARBAGE_STRING).c_str(), preferences.getString("WiFiPSK", GARBAGE_STRING).c_str());
     
     // Attempt to connect for ~5 seconds before continuing.
@@ -381,9 +446,9 @@ void loop() {
   // Lost connection to the internet. Re-Enable the AP to avoid getting stuck.
   if(!softAPActive && !WiFi.isConnected()) {
     Serial.println("Lost Internet. Restarting AP.");
-    WiFi.softAPsetHostname("niceclock");
+    WiFi.softAPsetHostname(("niceclock" + clientID).c_str());
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(APID, APSK);
+    WiFi.softAP(("NiceClock" + clientID).c_str(), APSK);
     softAPActive = true;
   }
 
@@ -421,13 +486,6 @@ void loop() {
 
   // Print the timezone info to SSDs
   printTime(timeinfo->tm_hour, timeinfo->tm_min);
-
-  // Adjust light intensity using a moving average
-  if ((millis() % 25) == 0) {
-    uint8_t ambiReading = ambientLight.reading(readAmbientLightData());
-    // Serial.println(ambiReading);
-    ledcWrite(ledChannel, ambientLight.getAvg());
-  }
 
   // Display IP if button flagged
   if (showIP){
