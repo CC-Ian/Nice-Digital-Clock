@@ -29,7 +29,7 @@ AsyncWebServer server(80);
 #define ledChannel 0
 #define ledPWMResolution 8
 
-// // EEAN Version: 3.0
+// EEAN Version: 3.0
 const int hours_pin[8] = {10, 8, 3, 9, 14, 11, 12, 13};
 const int minutes_pin[8] = {7, 4, 5, 6, 18, 15, 16, 17};
 #define SDA_PIN 34
@@ -158,21 +158,22 @@ uint8_t readAmbientLightData() {
 
 /// @brief Calculate the mean of an input array.
 /// @param data The array to compute the mean of.
+/// @param length The length of the array. Default is 10.
 /// @return The Mean.
-int calculateMean(uint8_t data[]) {
-  uint64_t sum = 0;
-  int size = sizeof(data) / sizeof(data[0]);
+int calculateMean(const uint8_t *data, size_t length) {
+  if (length == 0) return 0;
 
-  for (int i = 0; i < size; i++) {
+  uint32_t sum = 0;
+  for (int i = 0; i < length; i++) {
     sum += data[i];
   }
 
-  return sum / size;
+  return sum / length;
 }
 
 /// @brief Create a Client ID from the ESP's MAC Address.
 /// @return The ClientID in the form `112233`
-String getClientID(){
+String getClientID() {
   // Get the ESP MAC Address
   String macAddress = WiFi.macAddress();
 
@@ -201,7 +202,7 @@ void handleAutoBrightness(void *parameter) {
   };
 
   // Light Sensor Moving Average
-  #define NUM_SAMPLES 20
+  #define NUM_SAMPLES 10
   uint8_t ambientLightData[NUM_SAMPLES];
 
   // Fill moving average with real data.
@@ -217,10 +218,10 @@ void handleAutoBrightness(void *parameter) {
     index = (index + 1) % NUM_SAMPLES; // Circular buffer
 
     // Serial.println(ambiReading);
-    ledcWrite(ledChannel, calculateMean(ambientLightData));
+    ledcWrite(ledChannel, calculateMean(ambientLightData, NUM_SAMPLES));
 
-    // Adjust every 5ms
-    vTaskDelay(50 / portTICK_PERIOD_MS);
+    // Adjust every 25ms
+    vTaskDelay(25 / portTICK_PERIOD_MS);
   }
 }
 
